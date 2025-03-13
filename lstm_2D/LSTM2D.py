@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import lightning as pl
 from torch.utils.data import DataLoader, TensorDataset
 from torch.optim import Adam
@@ -69,12 +70,46 @@ class ConvLSTM2D(nn.Module):
         return outputs, (h, c)
 
 
+class SegmentedLoss(nn.Module):
+    def __init__(self, weights=None):
+        super(SegmentedLoss, self).__init__()
+        # Define weights for each segment (default: equal weights)
+        self.weights = weights if weights is not None else [1.0, 1.0, 1.0]
+
+    def forward(self, y_pred, y_true):
+        # Ensure predictions and targets have the same shape
+        assert y_pred.shape == y_true.shape, "Shapes of predictions and targets must match"
+
+        # Split predictions and targets into segments
+        pred_1_10 = y_pred[:, :10]  # Steps 1-10
+        true_1_10 = y_true[:, :10]
+
+        pred_11_20 = y_pred[:, 10:20]  # Steps 11-20
+        true_11_20 = y_true[:, 10:20]
+
+        pred_21_30 = y_pred[:, 20:30]  # Steps 21-30
+        true_21_30 = y_true[:, 20:30]
+
+        # Compute loss for each segment (e.g., Mean Squared Error)
+        loss_1_10 = F.mse_loss(pred_1_10, true_1_10)
+        loss_11_20 = F.mse_loss(pred_11_20, true_11_20)
+        loss_21_30 = F.mse_loss(pred_21_30, true_21_30)
+
+        # Combine losses with weights
+        total_loss = (
+            self.weights[0] * loss_1_10 +
+            self.weights[1] * loss_11_20 +
+            self.weights[2] * loss_21_30
+        ) / sum(self.weights)
+
+        return total_loss
+
 class ConvLSTMModel(pl.LightningModule):
     def __init__(self, input_channels, hidden_channels, kernel_size, lr, num_layers=1):
         super().__init__()
         self.conv_lstm = ConvLSTM2D(input_channels, hidden_channels, kernel_size, num_layers)
         self.conv_out = nn.Conv2d(hidden_channels, input_channels, kernel_size, padding="same")
-        self.criterion = nn.MSELoss()  # Loss function for regression
+        self.criterion = SegmentedLoss(weights=[0.2, 0.3, 0.5])#nn.MSELoss()  # Segment Loss function
         self.lr = lr
 
     def forward(self, x, pred_len=30):
@@ -100,9 +135,9 @@ class ConvLSTMModel(pl.LightningModule):
         return predictions
 
     def training_step(self, batch, batch_idx):
-        x, y, _, _ = batch  # x: (batch_size, 10, channels, height, width), y: (batch_size, 30, channels, height, width)
-        y = y.permute(0,3,1,2)
-        y = y.unsqueeze(2)
+        x, y, means, stds = batch  # x: (batch_size, height, width, 10), y: (batch_size, height, width, 30)
+        y = y.permute(0,3,1,2) # x: (batch_size, 10, height, width)
+        y = y.unsqueeze(2) # x: (batch_size, 10, channels, height, width)
         x = x.permute(0,3,1,2)
         x = x.unsqueeze(2)
         pred_size = y.size(1)
@@ -117,7 +152,7 @@ class ConvLSTMModel(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        x, y, _, _ = batch
+        x, y, means, stds = batch
         y = y.permute(0,3,1,2)
         y = y.unsqueeze(2)
         x = x.permute(0,3,1,2)
@@ -131,31 +166,81 @@ class ConvLSTMModel(pl.LightningModule):
         return val_loss
     
     def predict_step(self, batch, batch_idx):
-        x, y, mins, maxs = batch
+        x, y, means, stds = batch
         y = y.permute(0,3,1,2)
         y = y.unsqueeze(2)
         x = x.permute(0,3,1,2)
         x = x.unsqueeze(2)
         pred_size = y.size(1)
         predictions = self(x, pred_len=pred_size)  # shape: (batch_size, 30, channels, height, width)
-        predictions = predictions.permute(0, 2, 3, 4, 1)
+        predictions = predictions.permute(0, 2, 3, 4, 1) # shape: (batch_size, 1, height, width, 30)
         y = y.permute(0, 2, 3, 4, 1)
 
-        yhat = self.back01_transform(predictions, mins, maxs)
-        y = self.back01_transform(y, mins, maxs)
+        print('Before transform prediction: ',predictions.min(),predictions.max())
+        print('Before transform truth: ', y.min(), y.max())
+
+        yhat = self.z_score_back_transform(predictions, means, stds)
+        y = self.z_score_back_transform(y, means, stds)
+        yhat[y==0] = 0 #mask solid phase
         print('Back transform prediction: ',yhat.min(),yhat.max())
         print('Back transform truth: ', y.min(), y.max())
 
-        predictions = (yhat <= 0).float()
-        y = (y <= 0).float()
+        #predictions = (yhat <= 0).float()
+        #y = (y <= 0).float()
+        yhat[yhat>0] = 1
+        yhat[yhat==0] = 2
+        yhat[yhat<0] = 0
+        y[y>0] = 1
+        y[y==0] = 2
+        y[y<0] = 0
         pred = {
             'j': y,
-            'jhat': predictions,
+            'jhat': yhat,
         }
 
         return pred
 
+    def z_score_back_transform(self, normalized_data, means, stds):
+        """
+        Back-transform Z-score normalized data to its original scale.
+        Args:
+            normalized_data (torch.Tensor): Normalized data of shape [batch_size, 1, height, width, seq_len].
+            means (np.ndarray): Means of shape [batch_size, height, width, 1].
+            stds (np.ndarray): Standard deviations of shape [batch_sizse, height, width, 1].
+        Returns:
+            original_data (torch.Tensor): Back-transformed data of shape [batch_size, 1, height, width, seq_len].
+        """
+
+        # Reshape means and stds to match the batch and channel dimensions
+        means = means.unsqueeze(1)  # Shape: [1, 1, height, width, 1]
+        stds = stds.unsqueeze(1)    # Shape: [1, 1, height, width, 1]
+
+        # Back-transform
+        original_data = (normalized_data * stds) + means
+        return original_data
+
+    def back_transform(self, normalized, original_mins, original_maxs):
+        """
+        back transform from range [-1,1]
+        """
+        back_transformed = torch.zeros_like(normalized)
+        original_mins = original_mins.flatten()
+        original_maxs = original_maxs.flatten()
+        for i in range(normalized.shape[-1]):
+            #print(type(original_mins[i]))
+            #print(original_mins[i])
+            if original_maxs[i] != original_mins[i]:
+                back_transformed[...,i] = (normalized[...,i]+1)*(original_maxs[i] - original_mins[i])/2 + original_mins[i]
+            else:
+                back_transformed[...,i] = normalized[...,i]
+
+        return back_transformed
+
+
     def back01_transform(self, normalized, original_mins, original_maxs):
+        """
+        back transform from range [0,1]
+        """
         back_transformed = torch.zeros_like(normalized)
         original_mins = original_mins.flatten()
         original_maxs = original_maxs.flatten()

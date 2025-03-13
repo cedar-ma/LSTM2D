@@ -17,16 +17,16 @@ if __name__ == "__main__":
 
     torch.set_float32_matmul_precision('medium')
     hparams = {
-        'net_name': "lstm_h3",
+        'net_name': "lstm_h6_hc_zscore",
         'learning_rate': 1e-3,
         'batch_size': 1,
-        'epochs': 200,
+        'epochs': 266,
         'val_interval': 5,
         'T_in': 10,
         'T_out': 30,
         'seed': 189031465,
         'input_channels': 1,
-        'hidden_channels': 3,
+        'hidden_channels': 6,
         'kernel_size': 3,
         'num_layers': 1,
         'patience': 9999
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     seed = 189031465
 
     n_samples = 101
-    split = [0.6, 0.2, 0.2]
+    split = [0.7, 0.2, 0.1]
     image_ids = np.random.randint(low=0, high=100, size=(n_samples,))
     # train_dataloader, val_dataloader, test_dataloader = load_data()
     train_dataloader, val_dataloader, test_dataloader = get_dataloader(image_ids, 
@@ -98,11 +98,11 @@ if __name__ == "__main__":
            EarlyStopping(monitor="val_loss", check_finite=False, patience=hparams['patience'])]
 
     trainer = pl.Trainer(
-        #strategy='ddp_find_unused_parameters_true',
+        strategy='ddp',
         callbacks=cbs,  # Add the checkpoint callback
         max_epochs=hparams['epochs'],
         check_val_every_n_epoch=hparams['val_interval'],
-        log_every_n_steps=n_samples * split[0],
+        log_every_n_steps=n_samples * split[0]/3,
         logger=logger
     )
 

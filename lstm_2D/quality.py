@@ -36,7 +36,7 @@ def calculate_quality_over_sim(data, geom_file, nx=1280, ny=550,skip=1):
         foam_vof_calc = np.where(fracture==0, foam_vof, 100)
 
         fracture_voxels = len(np.where(foam_vof_calc < 100)[0])
-        gas_voxels = len(np.where(foam_vof_calc==1)[0])
+        gas_voxels = len(np.where(foam_vof_calc<0.5)[0])
         # porosity = fracture_voxels/np.prod(fracture.shape)
         quality = np.append(quality, gas_voxels/fracture_voxels)
 

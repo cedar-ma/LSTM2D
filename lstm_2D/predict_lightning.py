@@ -17,7 +17,7 @@ mpl.rcParams.update({'font.size': 14})
 
 if __name__ == "__main__":
 
-    net_name = "lstm_h3s"
+    net_name = "lstm_h3l2_nsign_zscore"
     with open(f"lightning_logs/{net_name}/hparam_config.json", 'r') as f:
         json_string = f.read()
 
@@ -26,8 +26,9 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("medium")
 
     n_samples = 10
-    split = [0.6, 0.2, 0.2]
-    image_ids = np.random.randint(low=0, high=9, size=(n_samples,))
+    split = [0.7, 0.2, 0.1]
+    np.random.seed(833)
+    image_ids = np.random.randint(low=0, high=100, size=(n_samples,))
     in_T = int(hparams['T_in'])
     out_T=int(hparams['T_out'])
     time_series = np.arange(in_T, in_T+out_T,1)
@@ -78,6 +79,10 @@ if __name__ == "__main__":
         quality[2*i] = calculate_quality_over_sim(data_truth, geom_file,nx=1280, ny=550,  skip=1)
         quality[2*i+1] = calculate_quality_over_sim( data_pred, geom_file, nx=1280, ny=550,skip=1)
 
+        L2 = ((data_truth - data_pred) ** 2).mean()
+        L1 = abs(data_truth - data_pred).mean()
+        print('L2 norm' + str(round(L2,4)) + '    L1 norm'+str(round(L1,4)))
+
         plt.figure()
         plt.plot(time_series, quality[2 * i], 'k--', label='Ground Truth')
         plt.plot(time_series, quality[2 * i + 1], 'r--', label='Prediction')
@@ -87,6 +92,18 @@ if __name__ == "__main__":
         plt.ylim(0, 1)
         plt.legend()
         plt.savefig(png_path / f'Quality_Sample{test_ids[i]:04}.png', dpi=300)
+        # find the limit of relative error
+        #all_min = []
+        #all_max = []
+        #for i, batch in enumerate(predictions):
+            #y = batch['j'][0,0,...,-1].squeeze().cpu().numpy()
+            #y_pred = batch["jhat"][0,0,...,-1].squeeze().cpu().numpy()
+            #y_rel_err = abs(y-y_pred) / abs(y)
+            #all_min.append(np.nanpercentile(y_rel_err, 2))
+            #all_max.append(np.nanpercentile(y_rel_err, 98))
+
+        #vmin = min(all_min)
+        #vmax = max(all_max)
 
         for j in range(0, out_T, 1):
 

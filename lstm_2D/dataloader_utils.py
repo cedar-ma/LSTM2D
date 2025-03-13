@@ -27,16 +27,10 @@ class NumpyDataset(Dataset):
             input_field = input_field[:,:550,:]
             input_field = self.sign_distance(input_field)
             #print('Signed input', input_field.min(), input_field.max())
-            input_field, _, _ = self.normalize01_slices(input_field)
+            input_field, _, _ = self.z_score_normalize(input_field)
             #print('Normal input', input_field.min(), input_field.max())
             
             input_field = torch.from_numpy(input_field).float()
-            #input_field = torch.tensor(input_field, dtype=torch.long)
-            #input_field = input_field.reshape(550, 550, 1, self.t_in).repeat([1, 1, self.t_out, 1])
-            
-            # one-hot encoding
-            #input_field = F.one_hot(input_field, num_classes=3).float()
-            #input_field = input_field.view(550, 550, self.t_out, -1)
             
             # Target fields
             output_field = np.fromfile(self.data_dir / f"135_{self.image_ids[idx]:04}_1280_550"/"target10_39_100.raw", dtype=np.uint8).reshape((self.t_out, 550, 1280))
@@ -44,16 +38,34 @@ class NumpyDataset(Dataset):
             output_field = output_field[:,:550,:]
             output_field = self.sign_distance(output_field)
             #print('Signed output', output_field.min(), output_field.max())
-            output_field, original_mins, original_maxs = self.normalize01_slices(output_field)
+            output_field, original_means, original_stds = self.z_score_normalize(output_field)
+            #print('std min and max', original_maxs.min(), original_maxs.max())
+            #print('Standardized min and max', output_field.min(), output_field.max())
 
         except FileNotFoundError as e:
             raise FileNotFoundError(f"File {e} not found.")
 
         output_field = torch.from_numpy(output_field).float()
-        original_mins = torch.tensor(original_mins)
-        original_maxs = torch.tensor(original_maxs)
+        original_means = torch.tensor(original_means)
+        original_stds = torch.tensor(original_stds)
         #output_field = torch.tensor(output_field, dtype=torch.long)
-        return input_field, output_field, original_mins, original_maxs
+        return input_field, output_field, original_means, original_stds
+
+    def z_score_normalize(self, data):
+        """
+        Perform Z-score normalization along the last dimension (seq_len).
+        Args:
+            data (np.ndarray): Input data of shape [height, width, seq_len].
+        Returns:
+            normalized_data (np.ndarray): Normalized data of shape [height, width, seq_len].
+            means (np.ndarray): Means along the seq_len dimension, shape [height, width].
+            stds (np.ndarray): Standard deviations along the seq_len dimension, shape [height, width].
+        """
+        means = np.mean(data, axis=-1, keepdims=True)  # Shape: [height, width, 1]
+        stds = np.std(data, axis=-1, keepdims=True)    # Shape: [height, width, 1]
+        stds[stds==0] = 1e-8
+        normalized_data = (data - means) / stds
+        return normalized_data, means, stds
     
     def normalize_slices(self, data_3d):
         """
@@ -108,6 +120,7 @@ class NumpyDataset(Dataset):
         sample[sample==-1] = 0
         bubble = edist(sample)
         total = grain - bubble
+        total[image==2]=0
 
         return total
 
@@ -156,7 +169,7 @@ def get_dataloader(image_ids, data_path, t_in, t_out, split, batch=1, num_worker
     dataset = NumpyDataset(image_ids=image_ids, data_dir=data_path, t_in=t_in, t_out=t_out)
     generator = torch.Generator().manual_seed(seed)
     assert len(split) == 3, "Split must be a list of length 3."
-    assert sum(split) == 1., "Sum of split must equal one."
+    assert round(sum(split), 6) == 1., "Sum of split must equal one."
     train_set, val_set, test_set = random_split(dataset, split, generator=generator)
     train_loader = DataLoader(train_set, batch_size=batch, shuffle=True, persistent_workers=True, num_workers=num_workers, **kwargs)
     val_loader = DataLoader(val_set, batch_size=batch, shuffle=False, persistent_workers=True, num_workers=num_workers, **kwargs)
@@ -169,7 +182,7 @@ def split_indices(indices, split, seed=None):
         np.random.seed(seed)
 
     assert len(split) == 3, "Split must be a list of length 3."
-    assert sum(split) == 1.0, "Sum of split must equal one."
+    assert round(sum(split), 6) == 1.0, "Sum of split must equal one."
 
     np.random.shuffle(indices)
     train_size = int(split[0] * len(indices))
