@@ -28,12 +28,12 @@ class ConvLSTM2DCell(nn.Module):
         gates = self.conv(combined)  # Apply convolution
         # Split the gates into input, forget, cell, and output
         input_gate, forget_gate, cell_gate, output_gate = gates.chunk(4, dim=1)
-        # Apply activation functions
+        
         input_gate = torch.sigmoid(input_gate)
         forget_gate = torch.sigmoid(forget_gate)
         cell_gate = torch.tanh(cell_gate)
         output_gate = torch.sigmoid(output_gate)
-        # Update cell state and hidden state
+        
         c = forget_gate * c + input_gate * cell_gate
         h = output_gate * torch.tanh(c)
         return h, c
@@ -51,13 +51,13 @@ class ConvLSTM2D(nn.Module):
     def forward(self, x, hidden_states=None):
         # x: input tensor of shape (batch_size, seq_len, input_channels, height, width)
         batch_size, seq_len, _, height, width = x.size()
-        # Initialize hidden and cell states if not provided
+        
         if hidden_states is None:
             h = [torch.zeros(batch_size, self.hidden_channels, height, width, device=x.device) for _ in range(self.num_layers)]
             c = [torch.zeros(batch_size, self.hidden_channels, height, width, device=x.device) for _ in range(self.num_layers)]
         else:
             h, c = hidden_states
-        # Process each time step
+        
         outputs = []
         for t in range(seq_len):
             x_t = x[:, t, :, :, :]  # Current time step
@@ -65,7 +65,7 @@ class ConvLSTM2D(nn.Module):
                 h[layer], c[layer] = self.cells[layer](x_t, h[layer], c[layer])
                 x_t = h[layer]  # Use the hidden state as input to the next layer
             outputs.append(h[-1].unsqueeze(1))  # Store the output of the last layer
-        # Stack outputs into a tensor
+        
         outputs = torch.cat(outputs, dim=1)  # shape: (batch_size, seq_len, hidden_channels, height, width)
         return outputs, (h, c)
 
@@ -77,10 +77,10 @@ class SegmentedLoss(nn.Module):
         self.weights = weights if weights is not None else [1.0, 1.0, 1.0]
 
     def forward(self, y_pred, y_true):
-        # Ensure predictions and targets have the same shape
+        
         assert y_pred.shape == y_true.shape, "Shapes of predictions and targets must match"
 
-        # Split predictions and targets into segments
+        
         pred_1_10 = y_pred[:, :10]  # Steps 1-10
         true_1_10 = y_true[:, :10]
 
@@ -90,12 +90,12 @@ class SegmentedLoss(nn.Module):
         pred_21_30 = y_pred[:, 20:30]  # Steps 21-30
         true_21_30 = y_true[:, 20:30]
 
-        # Compute loss for each segment (e.g., Mean Squared Error)
+        
         loss_1_10 = F.mse_loss(pred_1_10, true_1_10)
         loss_11_20 = F.mse_loss(pred_11_20, true_11_20)
         loss_21_30 = F.mse_loss(pred_21_30, true_21_30)
 
-        # Combine losses with weights
+        
         total_loss = (
             self.weights[0] * loss_1_10 +
             self.weights[1] * loss_11_20 +
@@ -117,9 +117,9 @@ class ConvLSTMModel(pl.LightningModule):
         batch_size = x.size(0)
         # Initialize the hidden state for iterative prediction
         h, c = None, None
-        # List to store predictions
+        
         predictions = []
-        # Iteratively predict the next `pred_len` time steps
+        
         for _ in range(pred_len):
             # Forward pass through ConvLSTM
             conv_lstm_out, (h, c) = self.conv_lstm(x)  # conv_lstm_out shape: (batch_size, seq_len, hidden_channels, height, width)
@@ -141,9 +141,9 @@ class ConvLSTMModel(pl.LightningModule):
         x = x.permute(0,3,1,2)
         x = x.unsqueeze(2)
         pred_size = y.size(1)
-        # Predict the next 30 time steps
+        
         predictions = self(x, pred_len=pred_size)  # shape: (batch_size, 30, channels, height, width)
-        # Compute loss
+        
         loss = self.criterion(predictions, y)
         self.log("loss", loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)#rank_zero_only=True)
         current_lr = self.optimizers().param_groups[0]['lr']
@@ -159,7 +159,7 @@ class ConvLSTMModel(pl.LightningModule):
         x = x.unsqueeze(2)
         pred_size = y.size(1)
         predictions = self(x, pred_len=pred_size)  # shape: (batch_size, 30, channels, height, width)
-        # Compute loss
+        
         val_loss = self.criterion(predictions, y)
         self.log("val_loss", val_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)#rank_zero_only=True)
 
@@ -215,7 +215,7 @@ class ConvLSTMModel(pl.LightningModule):
         means = means.unsqueeze(1)  # Shape: [1, 1, height, width, 1]
         stds = stds.unsqueeze(1)    # Shape: [1, 1, height, width, 1]
 
-        # Back-transform
+        
         original_data = (normalized_data * stds) + means
         return original_data
 
